@@ -1,0 +1,23 @@
+experiment_name: layout_regression_vit
+
+model:
+  architecture: cnn_vit
+  pretrained: true
+  save_path: cnn_vit_model.pth
+
+data:
+  base_dir: data/train
+  image_size: [256, 256]
+  ssim_threshold: 0.95
+  batch_size: 8
+
+training:
+  epochs: 10
+  learning_rate: 0.0001
+  optimizer: adam
+  loss: cross_entropy
+  device: cuda
+
+inference:
+  sample_path: samples/test_sample.npy
+  output_visualization: true
