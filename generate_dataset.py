@@ -8,6 +8,9 @@ import shutil
 
 reader = easyocr.Reader(['en'], gpu=False)
 
+SSIM_DIFF_THRESHOLD = 200  # lowered from 240 to increase sensitivity
+
+
 def mask_text_regions(image):
     results = reader.readtext(image)
     for (bbox, text, conf) in results:
@@ -46,6 +49,10 @@ for input_dir, output_dir in folders.items():
         grayA = cv2.cvtColor(baseline, cv2.COLOR_BGR2GRAY)
         grayB = cv2.cvtColor(modified, cv2.COLOR_BGR2GRAY)
         score, diff = ssim(grayA, grayB, full=True)
+
+        # Skip samples that don't differ enough visually
+        if input_dir == 'images/testing' and score > SSIM_DIFF_THRESHOLD / 255.0:
+            continue
         diff = (diff * 255).astype("uint8")
         diff_color = cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR)
 
@@ -63,4 +70,4 @@ for input_dir, output_dir in folders.items():
         os.makedirs(os.path.dirname(val_path), exist_ok=True)
         shutil.move(val_sample, val_path)
 
-print("✅ Dataset generated with balanced train/val split for layout_issue and no_issue.")
+print("✅ Dataset generated with balanced train/val split and adjusted SSIM threshold.")

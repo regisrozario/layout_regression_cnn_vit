@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import easyocr
 import matplotlib.pyplot as plt
+import argparse
 from model.cnn_vit_model import CNN_ViT_LayoutRegressor
 
 # Configuration
@@ -45,6 +46,11 @@ def extract_cam_hook(module, input, output):
 
 model.cnn[-1].register_forward_hook(extract_cam_hook)
 
+# Argument parsing
+parser = argparse.ArgumentParser()
+parser.add_argument('--no-mask', action='store_true', help='Disable text masking')
+args = parser.parse_args()
+
 # Inference loop over .npy samples
 for file in os.listdir(test_dir):
     if not file.endswith(".npy"):
@@ -57,8 +63,10 @@ for file in os.listdir(test_dir):
     modified = stacked[:, :, 3:6]
     ssim_map = stacked[:, :, 6:9]
 
-    baseline = mask_text_regions(baseline)
-    modified = mask_text_regions(modified)
+    if not args.no_mask:
+        baseline = mask_text_regions(baseline)
+    if not args.no_mask:
+        modified = mask_text_regions(modified)
     stacked_masked = np.concatenate([baseline, modified, ssim_map], axis=2)
     tensor = torch.tensor(stacked_masked, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0) / 255.0
 
@@ -80,13 +88,20 @@ for file in os.listdir(test_dir):
     result_path = os.path.join(test_dir, result_name)
     cv2.imwrite(result_path, overlay)
 
-    # Display side-by-side comparison
+    # Highlight overlap (difference area) on modified image
+    ssim_gray = cv2.cvtColor(ssim_map, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(ssim_gray, 200, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    debug_modified = modified.copy()
+    cv2.drawContours(debug_modified, contours, -1, (0, 0, 255), 2)
+
+# Display side-by-side comparison
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
     axes[0].imshow(cv2.cvtColor(baseline, cv2.COLOR_BGR2RGB))
     axes[0].set_title("Baseline")
     axes[0].axis("off")
 
-    axes[1].imshow(cv2.cvtColor(modified, cv2.COLOR_BGR2RGB))
+    axes[1].imshow(cv2.cvtColor(debug_modified, cv2.COLOR_BGR2RGB))
     axes[1].set_title("Modified")
     axes[1].axis("off")
 

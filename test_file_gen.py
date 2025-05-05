@@ -5,7 +5,7 @@ from skimage.metrics import structural_similarity as ssim
 
 # Paths
 baseline_path = "images/live_baseline/google_home_clean.png"
-broken_path = "images/sample_test_files/signin_link_name_change.png"
+broken_path = "images/sample_test_files/broken_search_input.png"
 output_path = "samples/test_sample.npy"
 image_size = (256, 256)
 
