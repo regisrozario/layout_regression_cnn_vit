@@ -1,65 +1,99 @@
+import os
 import torch
 import numpy as np
 import cv2
+import easyocr
+import matplotlib.pyplot as plt
 from model.cnn_vit_model import CNN_ViT_LayoutRegressor
-from torchvision.transforms import ToTensor
-from pathlib import Path
-from matplotlib import pyplot as plt
 
-# Config
-MODEL_PATH = "cnn_vit_model_best.pth"
-INPUT_PATH = "samples/test_sample.npy"
+# Configuration
 LABELS = ["No Layout Issue", "Layout Issue"]
+IMAGE_SIZE = (256, 256)
+model_path = "snapfix_best_model.pth"
+test_dir = "samples"
 
-# Grad-CAM hook
-activations = None
-def hook_fn(module, input, output):
-    global activations
-    activations = output
+# Initialize OCR
+reader = easyocr.Reader(['en'], gpu=False)
+
+def mask_text_regions(image):
+    image = np.ascontiguousarray(image)  # Ensure memory layout
+    if image.dtype != np.uint8:
+        image = (image * 255).astype(np.uint8)
+    if image.shape[2] == 3 and image.max() <= 1.0:
+        image = (image * 255).astype(np.uint8)
+
+    results = reader.readtext(image)
+    for (bbox, text, conf) in results:
+        if conf > 0.5:
+            (tl, tr, br, bl) = bbox
+            tl = tuple(map(int, tl))
+            br = tuple(map(int, br))
+            cv2.rectangle(image, tl, br, (0, 0, 0), -1)
+    return image
 
 # Load model
-model = CNN_ViT_LayoutRegressor()
-model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = CNN_ViT_LayoutRegressor().to(device)
+model.load_state_dict(torch.load(model_path, map_location=device))
 model.eval()
-model.cnn[-1].register_forward_hook(hook_fn)  # Register hook on last CNN layer
 
-# Load and preprocess input
-input_data = np.load(INPUT_PATH)  # [H, W, 9]
-img = torch.tensor(input_data, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0) / 255.0
+# Hook for Grad-CAM
+cam_features = None
+def extract_cam_hook(module, input, output):
+    global cam_features
+    cam_features = output
 
-# Inference
-with torch.no_grad():
-    output = model(img)
-    pred = torch.argmax(output, dim=1).item()
+model.cnn[-1].register_forward_hook(extract_cam_hook)
 
-# Grad-CAM calculation (basic)
-grad_cam = activations.squeeze(0).mean(dim=0).detach().numpy()  # [H, W]
-grad_cam = cv2.resize(grad_cam, (input_data.shape[1], input_data.shape[0]))
-grad_cam = (grad_cam - grad_cam.min()) / (grad_cam.max() - grad_cam.min())
+# Inference loop over .npy samples
+for file in os.listdir(test_dir):
+    if not file.endswith(".npy"):
+        continue
 
-# Visualizations
-ssim_diff = input_data[:, :, 6]  # SSIM map (gray)
+    sample_path = os.path.join(test_dir, file)
+    stacked = np.load(sample_path)  # shape: [H, W, 9]
 
-plt.figure(figsize=(14, 4))
-plt.subplot(1, 4, 1)
-plt.imshow(input_data[:, :, :3].astype(np.uint8))
-plt.title("Baseline")
+    baseline = stacked[:, :, 0:3]
+    modified = stacked[:, :, 3:6]
+    ssim_map = stacked[:, :, 6:9]
 
-plt.subplot(1, 4, 2)
-plt.imshow(input_data[:, :, 3:6].astype(np.uint8))
-plt.title("Modified")
+    baseline = mask_text_regions(baseline)
+    modified = mask_text_regions(modified)
+    stacked_masked = np.concatenate([baseline, modified, ssim_map], axis=2)
+    tensor = torch.tensor(stacked_masked, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0) / 255.0
 
-plt.subplot(1, 4, 3)
-plt.imshow(ssim_diff, cmap="hot")
-plt.title("SSIM Diff")
+    with torch.no_grad():
+        tensor = tensor.to(device)
+        output = model(tensor)
+        prediction = torch.argmax(output, dim=1).item()
+        print(f"{file}: {LABELS[prediction]}")
 
-plt.subplot(1, 4, 4)
-plt.imshow(input_data[:, :, 3:6].astype(np.uint8))
-plt.imshow(grad_cam, cmap='jet', alpha=0.5)
-plt.title("Grad-CAM Overlay")
+    # Grad-CAM heatmap
+    activation = cam_features.squeeze(0).detach().cpu().numpy().mean(axis=0)
+    activation = cv2.resize(activation, (256, 256))
+    activation = (activation - activation.min()) / (activation.max() - activation.min() + 1e-8)
+    heatmap = cv2.applyColorMap(np.uint8(255 * activation), cv2.COLORMAP_JET)
+    overlay = cv2.addWeighted(cv2.cvtColor(modified, cv2.COLOR_RGB2BGR), 0.6, heatmap, 0.4, 0)
 
-plt.suptitle(f"Prediction: {LABELS[pred]}")
-plt.tight_layout()
-plt.show()
+    # Save output
+    result_name = file.replace(".npy", "_grad_cam.png")
+    result_path = os.path.join(test_dir, result_name)
+    cv2.imwrite(result_path, overlay)
 
-print(f"Prediction: {LABELS[pred]}")
+    # Display side-by-side comparison
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(cv2.cvtColor(baseline, cv2.COLOR_BGR2RGB))
+    axes[0].set_title("Baseline")
+    axes[0].axis("off")
+
+    axes[1].imshow(cv2.cvtColor(modified, cv2.COLOR_BGR2RGB))
+    axes[1].set_title("Modified")
+    axes[1].axis("off")
+
+    axes[2].imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+    axes[2].set_title("Grad-CAM")
+    axes[2].axis("off")
+
+    plt.suptitle(f"{file}: {LABELS[prediction]}", fontsize=14)
+    plt.tight_layout()
+    plt.show()
